@@ -229,3 +229,18 @@ end
         @test invlogit(first(coef(model))) ≈ mean(y) rtol=0.05
     end
 end
+
+@testset "pathological init with nlopt" begin
+    invlogit(x) = inv(1 + exp(-x))
+    n = 500
+    X = ones(n, 1)
+    y = Vector{Float64}(undef, n)
+    # additional examples that get negative phi
+    # during fitting; originally in the loop below
+    # (0.5, 10) converges but isn't close to the theoretical value
+    for (α, β) in [(0.5, 0.5), (0.2, 0.2), (10, 0.3)]
+        y = rand!(StableRNG(42), Beta(α, β), y)
+        model = fit(BetaRegressionModel, X, y; method=:nlopt)
+        @test invlogit(first(coef(model))) ≈ mean(y) rtol=0.05
+    end
+end
