@@ -5,6 +5,7 @@ using GLM
 using LinearAlgebra
 using LinearAlgebra.BLAS
 using LogExpFunctions
+using NLopt
 using SpecialFunctions
 using Statistics
 using StatsAPI
@@ -299,6 +300,9 @@ function initialize!(b::BetaRegressionModel)
         ϕ += μᵢ * (1 - μᵢ) / σᵢ² - 1
     end
     ϕ /= n
+    # No valid estimate for the precision, follow suit with `betareg` in R and set to 1
+    # See https://stats.stackexchange.com/a/593670
+    ϕ > 0 || (ϕ = one(ϕ))
     copyto!(params(b), push!(β, ϕ))
     copyto!(linearpredictor(b), η)
     return b
@@ -319,7 +323,7 @@ function StatsAPI.score(b::BetaRegressionModel)
         yᵢ = y[i]
         a = digamma((1 - μᵢ) * ϕ)
         r = logit(yᵢ) - digamma(μᵢ * ϕ) + a
-        ∂θ[end] += μᵢ * r + log(1 - yᵢ) - a + ψϕ
+        ∂θ[end] += μᵢ * r + log1p(-yᵢ) - a + ψϕ
         Tr[i] = ϕ * r * mueta(link, ηᵢ)
     end
     mul!(view(∂θ, 1:size(X, 2)), X', Tr)
@@ -427,19 +431,49 @@ first partial derivatives of the log likelihood with respect to the parameters, 
 approximately zero. This is determined by `isapprox` using the specified `atol` and
 `rtol`. `maxiter` dictates the maximum number of Fisher scoring iterations.
 """
-function StatsAPI.fit!(b::BetaRegressionModel; maxiter=100, atol=1e-8, rtol=1e-8)
+function StatsAPI.fit!(b::BetaRegressionModel; maxiter=100, atol=1e-8, rtol=1e-8,
+                       method=:score)
     initialize!(b)
+    return _fit!(b, Val(method); maxiter, atol, rtol)
+end
+
+function _fit!(b::BetaRegressionModel, ::Val{:score}; maxiter, atol, rtol)
     z = zero(params(b))
     for iter in 1:maxiter
         U = score(b)
         checkfinite(U, iter)
-        isapprox(U, z; atol, rtol) && return b  # converged!
+        val = deviance(b)
+        isapprox(U, z; atol, rtol) && return b# converged!
         K = 🐟(b, true, true)
         checkfinite(K, iter)
         mul!(params(b), K, U, true, true)
         linearpredictor!(b)
     end
     throw(ConvergenceException(maxiter))
+end
+
+function _fit!(b::BetaRegressionModel, ::Val{:nlopt}; maxiter, atol, rtol)
+    # lowerbound for precision is 0, everything else has no lowerbound
+    lb = zero(params(b))
+    lb[1:end] .= -Inf
+
+    opt = NLopt.Opt(:LN_BOBYQA, length(params(b)))
+    NLopt.lower_bounds!(opt, lb)
+
+    # NLopt.ftol_rel!(opt, optsum.ftol_rel) # relative criterion on objective
+    # NLopt.ftol_abs!(opt, optsum.ftol_abs) # absolute criterion on objective
+    NLopt.xtol_rel!(opt, rtol) # relative criterion on parameter values
+
+    NLopt.maxeval!(opt, maxiter)
+    function obj(x, g)
+        isempty(g) || throw(ArgumentError("g should be empty for this objective"))
+        copyto!(params(b), x)
+        linearpredictor!(b)
+        val = deviance(b)
+        return val
+    end
+    NLopt.min_objective!(opt, obj)
+    return b
 end
 
 """
@@ -466,9 +500,9 @@ logit link is used.
 """
 function StatsAPI.fit(::Type{BetaRegressionModel}, X::AbstractMatrix, y::AbstractVector,
                       link=LogitLink(); weights=nothing, offset=nothing, maxiter=100,
-                      atol=1e-8, rtol=1e-8)
+                      atol=1e-8, rtol=1e-8, method=:score)
     b = BetaRegressionModel(X, y, link; weights, offset)
-    fit!(b; maxiter, atol, rtol)
+    fit!(b; maxiter, atol, rtol, method)
     return b
 end
 
