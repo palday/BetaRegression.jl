@@ -322,7 +322,7 @@ function StatsAPI.score(b::BetaRegressionModel)
         yᵢ = y[i]
         a = digamma((1 - μᵢ) * ϕ)
         r = logit(yᵢ) - digamma(μᵢ * ϕ) + a
-        ∂θ[end] += μᵢ * r + log(1 - yᵢ) - a + ψϕ
+        ∂θ[end] += μᵢ * r + log1p(-yᵢ) - a + ψϕ
         Tr[i] = ϕ * r * mueta(link, ηᵢ)
     end
     mul!(view(∂θ, 1:size(X, 2)), X', Tr)
